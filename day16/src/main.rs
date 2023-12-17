@@ -1,148 +1,127 @@
-use std::{
-    collections::{HashMap, HashSet},
-    env,
-    io::{self, BufRead},
-};
+use ahash::AHashMap as HashMap;
+use ahash::AHashSet as HashSet;
+use std::io::{self, BufRead};
 
-fn display_beam(m: i64, n: i64, cells: &Beam) {
-    for i in 0..m {
-        for j in 0..n {
-            if !cells.contains_key(&(i, j)) {
-                print!(" ");
-            } else {
-                let cell = &cells[&(i, j)];
-                let north = cell.contains(&(-1, 0));
-                let south = cell.contains(&(1, 0));
-                let west = cell.contains(&(0, 1));
-                let east = cell.contains(&(0, -1));
-                let char = match (north, south, west, east) {
-                    (true, true, true, true) => "┼",
-                    (true, true, true, false) => "├",
-                    (true, true, false, true) => "┤",
-                    (true, false, true, true) => "┴",
-                    (false, true, true, true) => "┬",
-                    (true, false, false, true) => "┘",
-                    (true, false, true, false) => "└",
-                    (false, true, false, true) => "┐",
-                    (false, true, true, false) => "┌",
-                    (true, true, false, false) => "│",
-                    (false, false, true, true) => "─",
-                    _ => unreachable!("Invalid cell"),
-                };
-                print!("{}", char);
-            }
-        }
-        println!();
-    }
-}
+type Ray = (i64, i64, i64, i64);
+type BeamInfo = (HashSet<(i64, i64)>, Option<(Ray, Ray)>);
+type Cache = HashMap<Ray, BeamInfo>;
 
-type Beam = HashMap<(i64, i64), HashSet<(i64, i64)>>;
-
-fn draw_beam(xs: &[String], init: (i64, i64, i64, i64)) -> Beam {
+fn compute_beam_info(xs: &[String], init: Ray) -> BeamInfo {
     let m = xs.len() as i64;
     let n = xs[0].len() as i64;
-    let mut beams = vec![init];
-    let mut seen = HashSet::new();
-    let mut cells = HashMap::new();
-    while !beams.is_empty() {
-        let current = beams.pop().unwrap();
+    let mut current = init;
+    let mut cells = HashSet::new();
+    loop {
         let (x, y, dx, dy) = current;
         if x < 0 || y < 0 || x >= m || y >= n {
-            continue;
+            break;
         }
-        if !seen.insert(current) {
-            continue;
+        if !cells.is_empty() && current == init {
+            break;
         }
-        let dirs = cells.entry((x, y)).or_insert(HashSet::new());
-        dirs.insert((-dx, -dy));
+        cells.insert((x, y));
         match xs[x as usize].as_bytes()[y as usize] {
             b'.' => {
-                beams.push((x + dx, y + dy, dx, dy));
-                dirs.insert((dx, dy));
-            }
-            b'-' if dx == 0 => {
-                beams.push((x + dx, y + dy, dx, dy));
-                dirs.insert((dx, dy));
-            }
-            b'|' if dy == 0 => {
-                beams.push((x + dx, y + dy, dx, dy));
-                dirs.insert((dx, dy));
-            }
-            b'-' => {
-                beams.push((x, y + 1, 0, 1));
-                beams.push((x, y - 1, 0, -1));
-                dirs.insert((0, 1));
-                dirs.insert((0, -1));
-            }
-            b'|' => {
-                beams.push((x + 1, y, 1, 0));
-                beams.push((x - 1, y, -1, 0));
-                dirs.insert((1, 0));
-                dirs.insert((-1, 0));
+                current = (x + dx, y + dy, dx, dy);
             }
             b'\\' => {
                 let (dx2, dy2) = (dy, dx);
-                beams.push((x + dx2, y + dy2, dx2, dy2));
-                dirs.insert((dx2, dy2));
+                current = (x + dx2, y + dy2, dx2, dy2);
             }
             b'/' => {
                 let (dx2, dy2) = (-dy, -dx);
-                beams.push((x + dx2, y + dy2, dx2, dy2));
-                dirs.insert((dx2, dy2));
+                current = (x + dx2, y + dy2, dx2, dy2);
+            }
+            b'-' if dx == 0 => {
+                current = (x + dx, y + dy, dx, dy);
+            }
+            b'|' if dy == 0 => {
+                current = (x + dx, y + dy, dx, dy);
+            }
+            b'-' => {
+                let child1 = (x, y + 1, 0, 1);
+                let child2 = (x, y - 1, 0, -1);
+                return (cells, Some((child1, child2)));
+            }
+            b'|' => {
+                let child1 = (x + 1, y, 1, 0);
+                let child2 = (x - 1, y, -1, 0);
+                return (cells, Some((child1, child2)));
             }
             _ => panic!("Invalid character"),
         }
     }
-    cells
+    (cells, None)
 }
 
-fn solve1(xs: &[String], display: bool) -> u64 {
+fn get_borders(xs: &[String]) -> Vec<Ray> {
     let m = xs.len() as i64;
     let n = xs[0].len() as i64;
-    let cells = draw_beam(xs, (0, 0, 0, 1));
-    if display {
-        display_beam(m, n, &cells);
-    }
-    cells.len() as u64
-}
-
-fn solve2(xs: &[String], display: bool) -> u64 {
-    let m = xs.len() as i64;
-    let n = xs[0].len() as i64;
-    let mut result: Option<Beam> = None;
+    let mut nodes = vec![];
     for i in 0..m {
-        let cells = draw_beam(xs, (i, 0, 0, 1));
-        if result.as_ref().map(|x| x.len()).unwrap_or_default() < cells.len() {
-            result = Some(cells);
-        }
-        let cells = draw_beam(xs, (i, n - 1, 0, -1));
-        if result.as_ref().map(|x| x.len()).unwrap_or_default() < cells.len() {
-            result = Some(cells);
-        }
+        nodes.extend([(i, 0, 0, 1), (i, n - 1, 0, -1)]);
     }
     for j in 0..n {
-        let cells = draw_beam(xs, (0, j, 1, 0));
-        if result.as_ref().map(|x| x.len()).unwrap_or_default() < cells.len() {
-            result = Some(cells);
-        }
-        let cells = draw_beam(xs, (m - 1, j, -1, 0));
-        if result.as_ref().map(|x| x.len()).unwrap_or_default() < cells.len() {
-            result = Some(cells);
+        nodes.extend([(0, j, 1, 0), (m - 1, j, -1, 0)]);
+    }
+    nodes
+}
+
+fn build_cache(xs: &[String]) -> Cache {
+    let m = xs.len() as i64;
+    let n = xs[0].len() as i64;
+    let mut cache = HashMap::new();
+    let mut nodes = get_borders(xs);
+    for i in 0..m {
+        for j in 0..n {
+            let c = xs[i as usize].as_bytes()[j as usize];
+            if c == b'|' {
+                nodes.extend([(i - 1, j, -1, 0), (i + 1, j, 1, 0)]);
+            } else if c == b'-' {
+                nodes.extend([(i, j - 1, 0, -1), (i, j + 1, 0, 1)]);
+            }
         }
     }
-    let result = result.unwrap();
-    if display {
-        display_beam(m, n, &result);
+    for node in nodes {
+        cache.insert(node, compute_beam_info(xs, node));
+    }
+    cache
+}
+
+fn count_cells(init: Ray, cache: &mut Cache) -> u64 {
+    let mut result: HashSet<(i64, i64)> = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut current = vec![init];
+    while let Some(node) = current.pop() {
+        let (cells, next) = cache.get(&node).unwrap();
+        seen.insert(node);
+        result.extend(cells);
+        if let Some((child1, child2)) = next {
+            for child in [child1, child2] {
+                if !seen.contains(child) {
+                    current.push(*child);
+                }
+            }
+        }
     }
     result.len() as u64
 }
 
+fn solve1(cache: &mut Cache) -> u64 {
+    count_cells((0, 0, 0, 1), cache)
+}
+
+fn solve2(xs: &[String], cache: &mut Cache) -> u64 {
+    get_borders(xs)
+        .iter()
+        .map(|&node| count_cells(node, cache))
+        .max()
+        .unwrap()
+}
+
 fn main() {
-    let display = env::args()
-        .nth(1)
-        .map(|x| x == "--display")
-        .unwrap_or_default();
     let vec: Vec<String> = io::stdin().lock().lines().map_while(Result::ok).collect();
-    println!("Part 1: {}", solve1(&vec, display));
-    println!("Part 2: {}", solve2(&vec, display));
+    let mut cache = build_cache(&vec);
+    println!("Part 1: {}", solve1(&mut cache));
+    println!("Part 2: {}", solve2(&vec, &mut cache));
 }
